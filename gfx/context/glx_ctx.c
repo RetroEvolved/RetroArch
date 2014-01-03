@@ -18,7 +18,10 @@
 
 #include "../../driver.h"
 #include "../gfx_context.h"
+
+#include <GL/glx.h>
 #include "../gl_common.h"
+
 #include "../gfx_common.h"
 #include "x11_common.h"
 
@@ -26,7 +29,6 @@
 #include <stdint.h>
 #include <X11/Xlib.h>
 #include <X11/Xutil.h>
-#include <GL/glx.h>
 
 static Display *g_dpy;
 static Window   g_win;
@@ -44,7 +46,7 @@ static GLXContext g_ctx;
 static GLXFBConfig g_fbc;
 static unsigned g_major;
 static unsigned g_minor;
-static bool g_core;
+static bool g_core_es;
 static bool g_debug;
 
 typedef GLXContext (*glXCreateContextAttribsARBProc)(Display*,
@@ -252,8 +254,13 @@ static bool gfx_ctx_init(void)
    g_debug = g_extern.system.hw_render_callback.debug_context;
 #endif
 
-   g_core = (g_major * 1000 + g_minor) >= 3001; // Have to use ContextAttribs
-   if ((g_core || g_debug) && !glx_create_context_attribs)
+#ifdef HAVE_OPENGLES2
+   g_core_es = true; // Have to use ContextAttribs
+#else
+   g_core_es = (g_major * 1000 + g_minor) >= 3001; // Have to use ContextAttribs
+#endif
+
+   if ((g_core_es || g_debug) && !glx_create_context_attribs)
       goto error;
 
    int nelements;
@@ -384,19 +391,23 @@ static bool gfx_ctx_set_video_mode(
 
    if (!g_ctx)
    {
-      if (g_core || g_debug)
+      if (g_core_es || g_debug)
       {
          int attribs[16];
          int *aptr = attribs;
 
-         if (g_core)
+         if (g_core_es)
          {
             *aptr++ = GLX_CONTEXT_MAJOR_VERSION_ARB;
             *aptr++ = g_major;
             *aptr++ = GLX_CONTEXT_MINOR_VERSION_ARB;
             *aptr++ = g_minor;
             *aptr++ = GLX_CONTEXT_PROFILE_MASK_ARB;
+#ifdef HAVE_OPENGLES2
+            *aptr++ = GLX_CONTEXT_ES_PROFILE_BIT_EXT;
+#else
             *aptr++ = GLX_CONTEXT_CORE_PROFILE_BIT_ARB;
+#endif
          }
 
          if (g_debug)
@@ -546,7 +557,7 @@ static void gfx_ctx_destroy(void)
    g_pglSwapInterval = NULL;
    g_pglSwapIntervalEXT = NULL;
    g_major = g_minor = 0;
-   g_core = false;
+   g_core_es = false;
 }
 
 static void gfx_ctx_input_driver(const input_driver_t **input, void **input_data)
@@ -577,7 +588,21 @@ static bool gfx_ctx_bind_api(enum gfx_ctx_api api, unsigned major, unsigned mino
 {
    g_major = major;
    g_minor = minor;
+#ifdef HAVE_OPENGLES2
+   Display *dpy = XOpenDisplay(NULL);
+   const char *exts = glXQueryExtensionsString(dpy, DefaultScreen(dpy));
+   bool ret = api == GFX_CTX_OPENGL_ES_API &&
+      exts && strstr(exts, "GLX_EXT_create_context_es2_profile");
+   XCloseDisplay(dpy);
+   if (ret && g_major < 3)
+   {
+      g_major = 2; // ES 2.0
+      g_minor = 0;
+   }
+   return ret;
+#else
    return api == GFX_CTX_OPENGL_API;
+#endif
 }
 
 #ifdef HAVE_EGL
